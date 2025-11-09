@@ -97,11 +97,22 @@ def extract_tables_with_doc_ai(pdf_path):
         content=image_content,
         mime_type="application/pdf",
     )
+
+    # --- NEW: Force the OCR processor to find tables ---
+    process_options = documentai.ProcessOptions(
+        ocr_config=documentai.OcrConfig(
+            enable_table_extraction=True,
+            enable_native_pdf_parsing=True # Improves digital PDF accuracy
+        )
+    )
+    # ---------------------------------------------------
+
     request = documentai.ProcessRequest(
         name=name,
-        raw_document=raw_document
+        raw_document=raw_document,
+        process_options=process_options # <-- ADDED THIS
     )
-    print(f"[DEBUG] Sending PDF to Document AI processor: {processor_id}...")
+    print(f"[DEBUG] Sending PDF to Document AI processor: {processor_id} with table extraction enabled...")
     result = client.process_document(request=request)
     processed_document = result.document
     print(f"[DEBUG] Document AI processing complete. Found {len(processed_document.pages)} pages.")
@@ -171,7 +182,7 @@ def clean_string(s):
         return ""
     # Remove all non-alphanumeric characters and lowercase
     return re.sub(r'[^a-z0-9]', '', s.lower())
-
+# ... all remaining code in the file is unchanged ...
 def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, timestamp):
     
     dfs = extract_tables_with_doc_ai(pdf_path)
