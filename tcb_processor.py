@@ -25,7 +25,6 @@ credit_account_map = {
     "FAA ADMIN CCD": "FAA ADMIN CCD",
     "MTOT DEP SYNCHRONY BANK CCD": "SYNCHRONY BANK CCD",
     "HCCLAIMPMT SUPERIOR VISION CCD": "SUPERIOR VISION CCD",
-    "ESSILOR SAFETY CCD": "ESSILOR SAFETY CCD",
     "HCCLAIMPMT UHC SPECTERA VSN CCD": "UHC SPECTERA VISION",
     "DAVIS VISION CCD": "DAVIS VISION CCD",
     "1010877933 FAA - AETNA CCD": "FAA - AETNA CCD",
@@ -194,7 +193,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     )
     df_credits["Document"] = [f"DP#{i}" for i in range(dp_startnum, dp_startnum + len(df_credits))]
 
-    # Export debits (Debit Account to Credit Bank)
     debit_rows = []
     for _, row in df_debits.iterrows():
         amt = round(row["DEBITS"], 2)
@@ -211,7 +209,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     debit_csv = os.path.join(output_folder, f"TCB_debits_{timestamp}.csv")
     df_export_debits.to_csv(debit_csv, index=False, header=False)
 
-    # Export credits (Debit Bank to Credit Revenue Account)
     credit_rows = []
     for _, row in df_credits.iterrows():
         amt = round(row["CREDITS"], 2)
@@ -228,7 +225,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     credit_csv = os.path.join(output_folder, f"TCB_credits_{timestamp}.csv")
     df_export_credits.to_csv(credit_csv, index=False, header=False)
 
-    # Export unmapped
     unmapped_rows = []
     for _, row in df_debits.iterrows():
         if row["Account"] == "7800":
