@@ -60,7 +60,7 @@ SUCCESS_HTML = """
 
 @app.route("/")
 def home():
-    return render_template_string(HOME_HTML)
+    return render_template_string(HOME_HTML)
 
 @app.route("/upload_tcb", methods=["POST"])
 def upload_tcb():
