@@ -1,1 +1,1 @@
-web: gunicorn mia:app --bind 0.0.0.0 --timeout 300
+web: gunicorn mia:app --bind 0.0.0.0:$PORT --timeout 300
