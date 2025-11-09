@@ -157,7 +157,6 @@ def fuzzy_header_match(row):
     targets_norm = [col.replace(" ", "") for col in targets]
     return norm == targets_norm
 
-
 def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, timestamp):
     """
     Main function to process the TCB statement, extract data using Google Cloud Document AI, 
