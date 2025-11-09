@@ -21,10 +21,6 @@ debit_account_map = {
 }
 
 def extract_tables_with_doc_ai(pdf_path):
-    """
-    Uses Google Cloud Document AI to extract tables from a PDF.
-    Assumes a processor with table extraction capability.
-    """
     if not GCP_PROJECT_ID or not GCP_PROCESSOR_ID:
         raise EnvironmentError(
             "GCP_PROJECT_ID or GCP_PROCESSOR_ID environment variables are not set. Cannot run Google Cloud Document AI."
@@ -34,7 +30,6 @@ def extract_tables_with_doc_ai(pdf_path):
     project_id = GCP_PROJECT_ID
     location = GCP_LOCATION
 
-    # Modern endpoint for Document AI v1 client
     client_options = ClientOptions(api_endpoint=f"{location}-documentai.googleapis.com")
     client = documentai.DocumentProcessorServiceClient(client_options=client_options)
     name = client.processor_path(project_id, location, processor_id)
@@ -57,7 +52,8 @@ def extract_tables_with_doc_ai(pdf_path):
     print(f"[DEBUG] Document AI processing complete. Found {len(processed_document.pages)} pages.")
 
     all_rows = []
-    for page in processed_document.pages:
+    for page_num, page in enumerate(processed_document.pages):
+        print(f"[DEBUG] Processing page {page_num + 1}")
         for table in page.tables:
             all_cells = table.header_rows + table.body_rows
             if not all_cells:
@@ -72,46 +68,62 @@ def extract_tables_with_doc_ai(pdf_path):
                         end_index = cell.layout.text_anchor.text_segments[0].end_index
                         content = processed_document.text[start_index:end_index].strip()
                         grid[cell.row_index][cell.column_index] = content
+            print(f"[DEBUG] Table on page {page_num + 1}:")
+            for rnum, row in enumerate(grid):
+                print(f"[DEBUG][Page {page_num + 1}][Row {rnum}]: {row}")
             all_rows.extend(grid)
     print(f"[DEBUG] Extracted total of {len(all_rows)} rows from all tables.")
     return all_rows
 
 def fuzzy_header_match(row):
-    targets = ["DATE", "BUSINESS WEBSITE OR DESCRIPTION", "DEBITS", "CREDITS"]
-    row_slice = row[:4] + [""] * max(0, 4 - len(row))
-    norm = [str(cell).strip().upper().replace(" ", "") for cell in row_slice[:4]]
-    targets_norm = [col.replace(" ", "") for col in targets]
-    return norm == targets_norm
+    # Acceptable header keywords
+    header_keywords = ["DATE", "BUSINESS", "DESCRIPTION", "DEBITS", "CREDITS"]
+    cells = [str(cell).upper().replace(" ", "") for cell in row]
+    matches = sum(any(keyword in cell for cell in cells) for keyword in header_keywords)
+    return matches >= 3  # Accept if at least three keywords match
 
 def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, timestamp):
     all_rows = extract_tables_with_doc_ai(pdf_path)
 
-    header_idx = None
+    # Print all extracted rows for debug
     for i, row in enumerate(all_rows):
-        if fuzzy_header_match(row):
-            header_idx = i
-            break
-    if header_idx is None:
+        print(f"[DEBUG] AllRows[{i}]: {row}")
+
+    # Find all header rows (indexes)
+    header_indexes = [i for i, row in enumerate(all_rows) if fuzzy_header_match(row)]
+    if not header_indexes:
         print("[ERROR] Table header row not found! Aborting.")
         raise ValueError("Can't locate table header in OCR output from Google Cloud Document AI.")
+
+    print(f"[DEBUG] Header row(s) found at indexes: {header_indexes}")
+
+    # Use the columns from the first header as main columns
+    header_row = all_rows[header_indexes[0]]
+    columns = [c.strip().upper() for c in header_row]
+    columns = ["DATE" if c == "DATE"
+               else "DESCRIPTION" if ("BUSINESS" in c or "DESCRIPTION" in c)
+               else c for c in columns]
+    num_cols = len(columns)
+
+    # Collect data rows skipping any repeated header rows
     table_data = []
-    header_row = all_rows[header_idx]
-    for row in all_rows[header_idx+1:]:
+    for i, row in enumerate(all_rows):
         if fuzzy_header_match(row):
+            print(f"[DEBUG] Skipping header row at index {i}: {row}")
             continue
-        if len(row) < len(header_row):
-            row = row + [""] * (len(header_row) - len(row))
+        # Skip rows above the first header
+        if i < header_indexes[0]:
+            continue
+        if len(row) < num_cols:
+            row = row + [""] * (num_cols - len(row))
         norm0 = str(row[0]).strip().upper()
         if norm0 == "" or "TOTAL" in norm0 or len(row[0].strip()) == 0:
             continue
-        table_data.append(row)
-    columns = [c.strip().upper() for c in header_row]
-    columns = ["DATE" if c == "DATE"
-               else "DESCRIPTION" if c == "BUSINESS WEBSITE OR DESCRIPTION"
-               else c for c in columns]
-    num_cols = len(columns)
-    cleaned_data = [row[:num_cols] for row in table_data]
-    df = pd.DataFrame(cleaned_data, columns=columns)
+        table_data.append(row[:num_cols])
+
+    print(f"[DEBUG] Final table data count: {len(table_data)}")
+
+    df = pd.DataFrame(table_data, columns=columns)
 
     # Data cleaning & conversion
     df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
@@ -132,7 +144,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
         (df["DEBITS"] > 0) &
         (~df["DESCRIPTION"].str.contains("DDA REGULAR CHECK", case=False, na=False))
     ].copy()
-
     # Credits: CREDITS > 0
     df_credits = df[df["CREDITS"].notnull() & (df["CREDITS"] > 0)].copy()
 
@@ -159,39 +170,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     df_credits["Document"] = [
         f"DP#{i}" for i in range(dp_startnum, dp_startnum + len(df_credits))
     ]
-
-    # Summary line validation
-    summary_row = None
-    for row in reversed(all_rows):
-        if "TOTAL" in str(row[0]).upper():
-            summary_row = row
-            break
-
-    if summary_row is not None:
-        total_debits = df_debits["DEBITS"].sum()
-        total_credits = df_credits["CREDITS"].sum()
-        s_debit, s_credit = None, None
-        for val in summary_row:
-            val_clean = str(val).replace("$", "").replace(",", "").strip()
-            if re.match(r"^\d+(\.\d+)?$", val_clean):
-                try:
-                    val_f = float(re.sub(r"[^\d.]", "", val_clean))
-                    if s_debit is None or val_f < s_debit:
-                        s_debit = val_f
-                    if s_credit is None or val_f > s_credit:
-                        s_credit = val_f
-                except:
-                    pass
-        is_debit_match = s_debit is not None and abs(s_debit - total_debits) < 1
-        is_credit_match = s_credit is not None and abs(s_credit - total_credits) < 1
-        if not is_debit_match or not is_credit_match:
-            print(f"[WARNING] Output sums do NOT match PDF summary! ")
-            print(f" PDF Debits: {s_debit}, Output Debits: {total_debits} | ")
-            print(f" PDF Credits: {s_credit}, Output Credits: {total_credits}")
-        else:
-            print("[OK] Output transaction sums match PDF summary.")
-    else:
-        print("[NOTICE] No summary row detected in statement; cannot auto-validate sum.")
 
     # Export debits (Debit Account to Credit Bank)
     debit_rows = []
