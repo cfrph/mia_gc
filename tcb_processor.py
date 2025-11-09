@@ -12,12 +12,53 @@ GCP_PROJECT_ID = os.environ.get("GCP_PROJECT_ID", "linear-poet-477701-q6")
 GCP_PROCESSOR_ID = os.environ.get("GCP_PROCESSOR_ID", "f5a3493251c3af8e")
 GCP_LOCATION = os.environ.get("GCP_LOCATION", "us") # e.g. 'us', 'eu', 'asia'
 
-# Account mappings (partial for brevity)
+# Mapping for Credit transactions (Deposits/Income)
 credit_account_map = {
-    # ... your mappings here ...
+    "MERCHANT BANKCD DEPOSIT ACH ENTRY MEMO POSTED TODAY": "DEP MERCH BANK CCD MAIN",
+    "SYNCHRONY BANK MTOT DEP ACH ENTRY MEMO POSTED TODAY": "SYNCHRONY BANK CCD",
+    "DEPOSIT MERCHANT BANKCD CCD": "DEP MERCH BANK CCD MAIN",
+    "REGULAR DEPOSIT": "REGULAR DEPOSIT",
+    "CIGNA": "FAA - CIGNA CCD",
+    "EYEMED VISION CCD": "EYEMED VISION CCD",
+    "ESSILOR": "ESSILOR SAFETY CCD",
+    "EYETOPIA": "REIMB EYETOPIA CCD",
+    "FAA ADMIN CCD": "FAA ADMIN CCD",
+    "MTOT DEP SYNCHRONY BANK CCD": "SYNCHRONY BANK CCD",
+    "HCCLAIMPMT SUPERIOR VISION CCD": "SUPERIOR VISION CCD",
+    "ESSILOR SAFETY CCD": "ESSILOR SAFETY CCD",
+    "HCCLAIMPMT UHC SPECTERA VSN CCD": "UHC SPECTERA VISION",
+    "DAVIS VISION CCD": "DAVIS VISION CCD",
+    "1010877933 FAA - AETNA CCD": "FAA - AETNA CCD",
+    "FSL ADMIN FAA CCD": "FSL ADMIN FAA CCD",
 }
+
+# Mapping for Debit transactions (Expenses/Payments)
 debit_account_map = {
-    # ... your mappings here ...
+    "USATAXPYMT IRS CCD": "2060",
+    "USA TAX PYMT IRS CCD": "2060",
+    "USA TAX PYMT IRS": "2060",
+    "AUTOPAYBUS CHASE CREDIT CRD PPD": "2130",
+    "CRCARDPMT CAPITAL ONE CCD": "2130",
+    "CAPITAL ONE VISA PMT": "2130",
+    "CHASE VISA PMT 7772": "2135",
+    "CHASE VISA PMT 3506": "2136",
+    "DISCOUNT MERCHANT BANKCD CCD": "6460",
+    "DISCT MERCH BANK CCD": "6460",
+    "MERCH BANK DISCT ACH": "6460",
+    "FEE MERCHANT BANKCD CCD": "6460",
+    "FEE MERCH BANK CCD": "6460",
+    "MERCH BANK FEE ACH": "6460",
+    "INTERCHNG MERCHANT BANKCD CCD": "6460",
+    "INTERCHNG MERCH BANK CCD": "6460",
+    "INTERCHNG MERCH BANK": "6460",
+    "MERCH BANK INTERCHNG ACH": "6460",
+    "WEB PAY PECAA BUYING GRP": "5000",
+    "PECAA BUYING GRP": "5000",
+    "ADT ALARM": "7475",
+    "EVERON ALARM": "7475",
+    "IPAY BILL PAY": "6200",
+    "MBFS.COM MERCEDES LEASE": "7260",
+    "TX WORKFORCE COMM": "2070",
 }
 
 def extract_tables_with_doc_ai(pdf_path):
@@ -25,7 +66,6 @@ def extract_tables_with_doc_ai(pdf_path):
         raise EnvironmentError(
             "GCP_PROJECT_ID or GCP_PROCESSOR_ID environment variables are not set. Cannot run Google Cloud Document AI."
         )
-
     processor_id = GCP_PROCESSOR_ID
     project_id = GCP_PROJECT_ID
     location = GCP_LOCATION
@@ -36,7 +76,6 @@ def extract_tables_with_doc_ai(pdf_path):
 
     with open(pdf_path, "rb") as image:
         image_content = image.read()
-
     raw_document = documentai.RawDocument(
         content=image_content,
         mime_type="application/pdf",
@@ -45,7 +84,6 @@ def extract_tables_with_doc_ai(pdf_path):
         name=name,
         raw_document=raw_document
     )
-
     print(f"[DEBUG] Sending PDF to Document AI processor: {processor_id}...")
     result = client.process_document(request=request)
     processed_document = result.document
@@ -76,20 +114,17 @@ def extract_tables_with_doc_ai(pdf_path):
     return all_rows
 
 def fuzzy_header_match(row):
-    # Acceptable header keywords
     header_keywords = ["DATE", "BUSINESS", "DESCRIPTION", "DEBITS", "CREDITS"]
     cells = [str(cell).upper().replace(" ", "") for cell in row]
     matches = sum(any(keyword in cell for cell in cells) for keyword in header_keywords)
-    return matches >= 3  # Accept if at least three keywords match
+    return matches >= 3
 
 def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, timestamp):
     all_rows = extract_tables_with_doc_ai(pdf_path)
 
-    # Print all extracted rows for debug
     for i, row in enumerate(all_rows):
         print(f"[DEBUG] AllRows[{i}]: {row}")
 
-    # Find all header rows (indexes)
     header_indexes = [i for i, row in enumerate(all_rows) if fuzzy_header_match(row)]
     if not header_indexes:
         print("[ERROR] Table header row not found! Aborting.")
@@ -97,21 +132,18 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
 
     print(f"[DEBUG] Header row(s) found at indexes: {header_indexes}")
 
-    # Use the columns from the first header as main columns
     header_row = all_rows[header_indexes[0]]
     columns = [c.strip().upper() for c in header_row]
-    columns = ["DATE" if c == "DATE"
-               else "DESCRIPTION" if ("BUSINESS" in c or "DESCRIPTION" in c)
+    columns = ["DATE" if "DATE" in c else 
+               "DESCRIPTION" if ("BUSINESS" in c or "DESCRIPTION" in c)
                else c for c in columns]
     num_cols = len(columns)
 
-    # Collect data rows skipping any repeated header rows
     table_data = []
     for i, row in enumerate(all_rows):
         if fuzzy_header_match(row):
             print(f"[DEBUG] Skipping header row at index {i}: {row}")
             continue
-        # Skip rows above the first header
         if i < header_indexes[0]:
             continue
         if len(row) < num_cols:
@@ -124,8 +156,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     print(f"[DEBUG] Final table data count: {len(table_data)}")
 
     df = pd.DataFrame(table_data, columns=columns)
-
-    # Data cleaning & conversion
     df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
     df["DEBITS"] = pd.to_numeric(
         df["DEBITS"].astype(str).str.replace(r'[$,() ]', '', regex=True).str.replace(r'^-', '', regex=True).apply(
@@ -138,19 +168,16 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
         ), errors="coerce"
     )
 
-    # Debits: DEBITS > 0 && not check
     df_debits = df[
         (df["DEBITS"].notnull()) &
         (df["DEBITS"] > 0) &
         (~df["DESCRIPTION"].str.contains("DDA REGULAR CHECK", case=False, na=False))
     ].copy()
-    # Credits: CREDITS > 0
     df_credits = df[df["CREDITS"].notnull() & (df["CREDITS"] > 0)].copy()
 
     df_debits.sort_values("DATE", inplace=True)
     df_credits.sort_values("DATE", inplace=True)
 
-    # Map accounts
     df_debits["Account"] = df_debits["DESCRIPTION"].str.upper().apply(
         lambda desc: next((v for k, v in debit_account_map.items() if k in str(desc)), "7800")
     )
@@ -158,18 +185,14 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
         lambda desc: next((k for k in debit_account_map.keys() if k in str(desc)), desc)
     )
     df_debits["CounterAccount"] = "1100"
-    df_debits["Document"] = [
-        f"GJ#{i}" for i in range(gj_startnum, gj_startnum + len(df_debits))
-    ]
+    df_debits["Document"] = [f"GJ#{i}" for i in range(gj_startnum, gj_startnum + len(df_debits))]
 
     df_credits["Account"] = "4000"
     df_credits["CounterAccount"] = "1100"
     df_credits["ShortDescription"] = df_credits["DESCRIPTION"].str.upper().apply(
         lambda desc: next((v for k, v in credit_account_map.items() if k in str(desc)), desc)
     )
-    df_credits["Document"] = [
-        f"DP#{i}" for i in range(dp_startnum, dp_startnum + len(df_credits))
-    ]
+    df_credits["Document"] = [f"DP#{i}" for i in range(dp_startnum, dp_startnum + len(df_credits))]
 
     # Export debits (Debit Account to Credit Bank)
     debit_rows = []
