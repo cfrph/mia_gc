@@ -66,6 +66,8 @@ def get_text_from_dimensions(document, layout):
     """Extracts text from the Document object based on layout bounding box."""
     # This is a safe helper function to get text content from a layout/cell object
     text_segments = []
+    if not layout.text_anchor or not layout.text_anchor.text_segments:
+        return ""
     for segment in layout.text_anchor.text_segments:
         start_index = int(segment.start_index)
         end_index = int(segment.end_index)
@@ -108,12 +110,14 @@ def extract_tables_with_doc_ai(pdf_path):
     
     if processed_document.pages:
         for page_num, page in enumerate(processed_document.pages):
+            print(f"[DEBUG] Analyzing Page {page_num + 1}...")
             for table_num, table in enumerate(page.tables):
                 
                 # Extract header row from the first row of header_rows (if present)
                 if not table.header_rows:
                     print(f"[DEBUG] Page {page_num+1}, Table {table_num+1}: No explicit header rows found, attempting to use first body row as header.")
                     if not table.body_rows:
+                        print(f"[DEBUG] Page {page_num+1}, Table {table_num+1}: Skipping as it has no body rows.")
                         continue
                     # If no explicit header, assume the first body row is the header
                     header_text = [
@@ -135,8 +139,12 @@ def extract_tables_with_doc_ai(pdf_path):
                         get_text_from_dimensions(processed_document, cell.layout)
                         for cell in row.cells
                     ]
-                    clean_body_rows.append(row_data)
-                    
+                    # Ensure row has the same number of columns as the header
+                    if len(row_data) == len(header_text):
+                        clean_body_rows.append(row_data)
+                    else:
+                        print(f"[DEBUG] Skipping row due to column mismatch. Header has {len(header_text)}, row has {len(row_data)}. Row: {row_data}")
+
                 # Create DataFrame immediately
                 if clean_body_rows and header_text:
                     # Use raw header text for column names temporarily
@@ -171,21 +179,25 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     if not dfs:
         raise ValueError("Document AI did not return any structured tables from the PDF.")
 
+    # Concatenate all tables found across all pages
     df = pd.concat(dfs, ignore_index=True)
     
     # 1. Implement Highly Flexible Fuzzy Column Identification (Tailored for 3-Column TCB)
     
     # Redefined tokens for the specific 3-column layout (Date, Description, Amount/Credit/Debit Combined)
     FUZZY_COLUMN_TOKENS = {
-        'DATE': ['date', 'txn date', 'posted'],
-        'DESCRIPTION': ['description', 'website', 'details', 'activity'],
+        'DATE': ['date', 'txndate', 'posted'],
+        'DESCRIPTION': ['description', 'business', 'website', 'details', 'activity'],
         # Target the combined 'DEBITS/CREDITS' column or any variation of 'Amount'
         'AMOUNT_COMBINED': ['debit', 'credit', 'amount', 'balance', 'debtscredits'], 
     }
     REQUIRED_COLUMNS = list(FUZZY_COLUMN_TOKENS.keys())
 
     # Prepare extracted column names for matching (clean_name: original_name)
+    # We clean the column names from the DataFrame for matching
     cleaned_cols = {clean_string(col): col for col in df.columns.tolist()}
+    print(f"[DEBUG] Available cleaned headers for matching: {list(cleaned_cols.keys())}")
+    
     col_rename = {}
     found_cols = set()
     
@@ -209,12 +221,16 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
                 # Remove the found column from the search pool to prevent re-matching
                 del cleaned_cols[matching_cleaned_col] 
                 found = True
+                print(f"[DEBUG] Matched '{standard_name}' with column '{original_col_name}' (via token '{search_term}')")
                 break
+        if not found:
+             print(f"[DEBUG] Could not find a match for required column: '{standard_name}'")
+
     
     # CRITICAL CHECK: Ensure all required columns were found
     if not all(col in found_cols for col in REQUIRED_COLUMNS):
         missing_cols = [c for c in REQUIRED_COLUMNS if c not in found_cols]
-        print(f"[ERROR] Missing required columns: {missing_cols}. Available headers (cleaned): {list(df.columns)}")
+        print(f"[ERROR] Missing required columns: {missing_cols}. Available headers (original): {list(df.columns)}")
         raise ValueError(
             "Can't locate table header in OCR output from Google Cloud Document AI. "
             f"Missing required columns: {', '.join(missing_cols)}. The PDF may not be the expected 3-column TCB format."
@@ -236,6 +252,8 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
         cleaned = series.astype(str).str.replace(r'[$, ]', '', regex=True).str.strip()
         # Handle the common case where a debit is represented as negative
         cleaned = cleaned.str.replace(r'\(', '-', regex=True).str.replace(r'\)', '', regex=True)
+        # Handle cases where negative is just a minus sign
+        cleaned = cleaned.str.replace(r'^-', '-', regex=True)
         return pd.to_numeric(cleaned, errors='coerce').fillna(0)
     
     # Since we have only one column, apply the cleaning directly to it
@@ -261,28 +279,32 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     
     def map_debit_account(desc):
         desc_upper = str(desc).upper()
-        return next((v for k, v in debit_account_map.items() if k in desc_upper), UNCATEGORIZED_ACCOUNT)
+        # Find the longest matching key for better precision
+        best_match = ""
+        for k in debit_account_map.keys():
+            if k in desc_upper and len(k) > len(best_match):
+                best_match = k
+        return debit_account_map.get(best_match, UNCATEGORIZED_ACCOUNT)
 
     # Assign Expense (Debit) account for outflows (Amount < 0), or Income (4000) for inflows (Amount > 0)
     df['Account'] = df.apply(lambda row: map_debit_account(row['DESCRIPTION']) if row['Amount'] < 0 else INCOME_ACCOUNT, axis=1) 
     
     # ShortDescription mapping: find the longest matching key from either map
-    # Note: We don't distinguish between credit/debit map keys here, relying on longest match
-    all_map_keys = {**debit_account_map, **{v: k for k, v in credit_account_map.items()}} # Combined maps
+    all_map_keys = {**debit_account_map, **credit_account_map} # Combined maps
     
     def get_short_description(desc):
         desc_upper = str(desc).upper()
         # Find the longest matching key for better precision
         best_match = ""
-        # Check debit map keys (these often have longer, more specific names)
-        for k in debit_account_map.keys():
+        for k in all_map_keys.keys():
             if k in desc_upper and len(k) > len(best_match):
                 best_match = k
-        # Check credit map keys (can override if a longer match is found)
-        for k in credit_account_map.keys():
-            if k in desc_upper and len(k) > len(best_match):
-                best_match = k
-        return best_match if best_match else desc
+        # Use the *value* from the map if it's a credit, or the key if it's a debit
+        if best_match in credit_account_map:
+             return credit_account_map[best_match]
+        if best_match in debit_account_map:
+             return best_match # Use the key for debits as it's more descriptive
+        return desc # Return original description if no match
     
     df['ShortDescription'] = df['DESCRIPTION'].apply(get_short_description)
 
@@ -340,5 +362,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
         unmapped_df['TransactionType'] = 'Debit'
         unmapped_df['AbsoluteAmount'] = unmapped_df['Amount'].abs()
         unmapped_df.to_csv(unmapped_csv, columns=['DATE', 'DESCRIPTION', 'AbsoluteAmount', 'TransactionType', 'Account'], index=False)
+        print(f"[DEBUG] Generated unmapped report with {len(unmapped_df)} entries.")
 
     return credit_csv, debit_csv, unmapped_csv if unmapped_csv else None
