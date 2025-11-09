@@ -1,0 +1,8 @@
+google-cloud-documentai
+Flask
+gunicorn
+werkzeug
+pandas
+numpy
+openpyxl
+PyPDF2
