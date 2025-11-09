@@ -27,7 +27,6 @@ credit_account_map = {
     "1010877933 FAA - AETNA CCD": "FAA - AETNA CCD",
     "FSL ADMIN FAA CCD": "FSL ADMIN FAA CCD",
 }
-
 debit_account_map = {
     "USATAXPYMT IRS CCD": "2060",
     "USA TAX PYMT IRS CCD": "2060",
@@ -86,15 +85,15 @@ def extract_bank_statement_entities(pdf_path):
                     elif prop.type_ == "transaction_type":
                         txn["type"] = prop.mention_text
             transactions.append(txn)
-    print("[DEBUG] First 3 transactions:", transactions[:3])
+    print("[DEBUG] Extracted transactions count:", len(transactions))
+    print("[DEBUG] Sample transactions:", transactions[:3])
     return transactions
 
 def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, timestamp):
     txns = extract_bank_statement_entities(pdf_path)
     df = pd.DataFrame(txns)
 
-    # Safeguard: Ensure expected columns exist
-    for col in ("date", "amount", "description", "type"):
+    for col in ("date","amount","description","type"):
         if col not in df.columns:
             df[col] = ""
 
@@ -103,8 +102,12 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     df["DESCRIPTION"] = df["description"]
     df["TYPE"] = df["type"].str.lower()
 
-    # Process debits
     df_debits = df[df["TYPE"] == "debit"].copy()
+    df_credits = df[df["TYPE"] == "credit"].copy()
+
+    print(f"[DEBUG] Debit rows count: {len(df_debits)}")
+    print(f"[DEBUG] Credit rows count: {len(df_credits)}")
+
     df_debits.sort_values("DATE", inplace=True)
     df_debits["Account"] = df_debits["DESCRIPTION"].str.upper().apply(
         lambda desc: next((v for k, v in debit_account_map.items() if k in desc), "7800")
@@ -127,8 +130,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     debit_csv = os.path.join(output_folder, f"TCB_debits_{timestamp}.csv")
     df_export_debits.to_csv(debit_csv, index=False, header=False)
 
-    # Process credits
-    df_credits = df[df["TYPE"] == "credit"].copy()
     df_credits.sort_values("DATE", inplace=True)
     df_credits["Account"] = "4000"
     df_credits["CounterAccount"] = "1100"
@@ -151,7 +152,6 @@ def process_tcb_statement(pdf_path, gj_startnum, dp_startnum, output_folder, tim
     credit_csv = os.path.join(output_folder, f"TCB_credits_{timestamp}.csv")
     df_export_credits.to_csv(credit_csv, index=False, header=False)
 
-    # Export unmapped debits
     unmapped_rows = []
     for _, row in df_debits.iterrows():
         if row["Account"] == "7800":
